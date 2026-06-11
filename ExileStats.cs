@@ -69,15 +69,15 @@ namespace ExileStats
         private string _sHours = "00", _sMinutes = "00", _sSeconds = "00";
         private int _vTimerSeconds = -1;
 
-        // AimCore DPS bridge — resolved once via reflection, null-safe if AimCore absent
-        private System.Reflection.PropertyInfo _piDpsNow, _piDpsPeak, _piDpsTotal;
-        private bool _aimCoreResolved;
+        // Standalone DPS tracker — entity HP-delta scanner, no external plugin needed
+        private DpsTracker _dpsTracker;
         private string _sDpsNow = "0", _sDpsPeak = "—", _sDpsTotal = "—";
         private float _vDpsNow = -1f, _vDpsPeak = -1f, _vDpsTotal = -1f;
 
         public override bool Initialise()
         {
             _logic = new ExileStatsLogic(GameController);
+            _dpsTracker = new DpsTracker(GameController);
 
             Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\ui-mini.png").Replace('\\', '/'), false);
             Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\ui-full.png").Replace('\\', '/'), false);
@@ -102,6 +102,7 @@ namespace ExileStats
         public override void AreaChange(AreaInstance area)
         {
             Logic.OnAreaChange(area);
+            _dpsTracker.Reset();
 
             // Reset DPS display so the bar/numbers start from zero in the new area
             // (avoids residual lerp value carrying over from the previous map).
@@ -115,7 +116,7 @@ namespace ExileStats
             bool gameIsPaused = GameController?.Game?.IsEscapeState ?? false;
             if (!gameIsPaused)
             {
-                TryResolveAimCore();
+                if (Logic.IsInMap) _dpsTracker.Update();
                 Logic.Update();
                 RefreshStatStrings();
             }
@@ -155,10 +156,10 @@ namespace ExileStats
                 _sSeconds = elapsed.Seconds.ToString("00");
             }
 
-            // DPS — read from AimCore static bridge via reflection
-            float dNow   = _piDpsNow   != null ? (float)(_piDpsNow.GetValue(null)   ?? 0f) : 0f;
-            float dPeak  = _piDpsPeak  != null ? (float)(_piDpsPeak.GetValue(null)  ?? 0f) : 0f;
-            float dTotal = _piDpsTotal != null ? (float)(_piDpsTotal.GetValue(null) ?? 0f) : 0f;
+            // DPS — read from the built-in HP-delta tracker
+            float dNow   = _dpsTracker.DpsNow;
+            float dPeak  = _dpsTracker.DpsPeak;
+            float dTotal = _dpsTracker.DpsTotal;
 
             // Smooth NOW display with lerp — bar and number animate fluidly
             const float lerpSpeed = 0.08f;
@@ -372,20 +373,6 @@ namespace ExileStats
                 Graphics.DrawText(_sDpsPeak,  new Vector2(origin.X + PeakOX  * sc, origin.Y + PeakOY  * sc), ValueColor);
                 Graphics.DrawText(_sDpsTotal, new Vector2(origin.X + TotalOX * sc, origin.Y + TotalOY * sc), ValueColor);
             }
-        }
-
-        private void TryResolveAimCore()
-        {
-            if (_aimCoreResolved) return;
-            _aimCoreResolved = true;
-            var t = AppDomain.CurrentDomain.GetAssemblies()
-                .SelectMany(a => { try { return a.GetTypes(); } catch { return Array.Empty<Type>(); } })
-                .FirstOrDefault(t => t.FullName == "AimCore.AimCore");
-            if (t == null) return;
-            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static;
-            _piDpsNow   = t.GetProperty("DpsNow",   flags);
-            _piDpsPeak  = t.GetProperty("DpsPeak",  flags);
-            _piDpsTotal = t.GetProperty("DpsTotal", flags);
         }
 
         private static string FormatDps(float v)
