@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Windows.Forms;
 using ExileCore2;
@@ -28,11 +30,30 @@ namespace ExileStats
         private const string ImgFull    = "ui-full.png";
         private const string ImgBtnMini = "but-mini.png";
         private const string ImgBtnFull = "but-full.png";
+        private const string ImgDps     = "ui-dps.png";
+        private const string ImgBar     = "ui-dps-bar.png";
 
         // PNG dimensions
         private const float MiniW = 248, MiniH = 64;
         private const float FullW = 250, FullH = 53;
         private const float BtnW  = 16,  BtnH  = 19;
+        private const float DpsW  = 313, DpsH  = 69;
+
+        // --- Locked layout baseline (calibrated @ scale 1; everything below scales as a group) ---
+        // Timer / mini panel
+        private const float BtnOX = 221, BtnOY = 38;
+        private const float HoursOX = 45, HoursOY = 19, MinOX = 111, MinOY = 19, SecOX = 174, SecOY = 19;
+        private const float TimerTracking = 2f, TimerFont = 2.0f;
+        // Stats / full panel
+        private const float KillsOX = 32, KillsOY = 8, KminOX = 130, KminOY = 8;
+        private const float MapsOX = 43, MapsOY = 33, MhOX = 123, MhOY = 33;
+        private const float XphOX = 192, XphOY = 8, DeathsOX = 202, DeathsOY = 33;
+        private const float StatsTracking = 0f, StatsFont = 1.0f;
+        // DPS gauge
+        private const float BarOX = 20, BarOY = 18, BarBaseW = 195, BarBaseH = 46;
+        private const float NowOX = 115, NowOY = 29, PeakOX = 253, PeakOY = 24, TotalOX = 253, TotalOY = 41;
+        private const float NowFont = 1.4f, StatFont = 0.9f;
+        private static readonly Color ValueColor = Color.FromArgb(255, 200, 197, 164); // c8c5a4
 
         // Cache of single-character widths, keyed by (char, scale). Char glyph widths
         // are constant for a given scale, so we measure each once instead of every frame.
@@ -48,6 +69,12 @@ namespace ExileStats
         private string _sHours = "00", _sMinutes = "00", _sSeconds = "00";
         private int _vTimerSeconds = -1;
 
+        // AimCore DPS bridge — resolved once via reflection, null-safe if AimCore absent
+        private System.Reflection.PropertyInfo _piDpsNow, _piDpsPeak, _piDpsTotal;
+        private bool _aimCoreResolved;
+        private string _sDpsNow = "0", _sDpsPeak = "—", _sDpsTotal = "—";
+        private float _vDpsNow = -1f, _vDpsPeak = -1f, _vDpsTotal = -1f;
+
         public override bool Initialise()
         {
             _logic = new ExileStatsLogic(GameController);
@@ -56,25 +83,42 @@ namespace ExileStats
             Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\ui-full.png").Replace('\\', '/'), false);
             Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\but-mini.png").Replace('\\', '/'), false);
             Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\but-full.png").Replace('\\', '/'), false);
+            Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\ui-dps.png").Replace('\\', '/'), false);
+            Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\ui-dps-bar.png").Replace('\\', '/'), false);
+
+            Settings.ResetPositions.OnPressed += () =>
+            {
+                Settings.PosX.Value = 1445;
+                Settings.PosY.Value = 933;
+                Settings.DpsPanelX.Value = 818;
+                Settings.DpsPanelY.Value = 868;
+                Settings.GroupScale.Value = 1.0f;
+                Settings.DpsScale.Value = 1.0f;
+            };
 
             return true;
         }
 
         public override void AreaChange(AreaInstance area)
         {
-            if (Settings.DebugArea)
-            {
-                DebugWindow.LogMsg(
-                    $"[ExileStats] Area='{area.Name}' Act={area.Act} Level={area.RealLevel} " +
-                    $"Peaceful={area.IsPeaceful} Town={area.IsTown} Hideout={area.IsHideout} Hash={area.Hash}");
-            }
             Logic.OnAreaChange(area);
+
+            // Reset DPS display so the bar/numbers start from zero in the new area
+            // (avoids residual lerp value carrying over from the previous map).
+            _vDpsNow = _vDpsPeak = _vDpsTotal = -1f;
+            _sDpsNow = "0"; _sDpsPeak = "—"; _sDpsTotal = "—";
         }
 
         public override void Tick()
         {
-            Logic.Update();
-            RefreshStatStrings();
+            // Freeze all stats while the ESC / "Game Paused" menu is open.
+            bool gameIsPaused = GameController?.Game?.IsEscapeState ?? false;
+            if (!gameIsPaused)
+            {
+                TryResolveAimCore();
+                Logic.Update();
+                RefreshStatStrings();
+            }
             HandleInventoryAutoCollapse();
             HandleToggleClick();
         }
@@ -110,6 +154,20 @@ namespace ExileStats
                 _sMinutes = elapsed.Minutes.ToString("00");
                 _sSeconds = elapsed.Seconds.ToString("00");
             }
+
+            // DPS — read from AimCore static bridge via reflection
+            float dNow   = _piDpsNow   != null ? (float)(_piDpsNow.GetValue(null)   ?? 0f) : 0f;
+            float dPeak  = _piDpsPeak  != null ? (float)(_piDpsPeak.GetValue(null)  ?? 0f) : 0f;
+            float dTotal = _piDpsTotal != null ? (float)(_piDpsTotal.GetValue(null) ?? 0f) : 0f;
+
+            // Smooth NOW display with lerp — bar and number animate fluidly
+            const float lerpSpeed = 0.08f;
+            if (_vDpsNow < 0f) _vDpsNow = dNow; // first frame: snap
+            else _vDpsNow += (dNow - _vDpsNow) * lerpSpeed;
+            _sDpsNow = FormatDps(_vDpsNow);
+
+            if (Math.Abs(dPeak  - _vDpsPeak)  > 0.5f) { _vDpsPeak  = dPeak;  _sDpsPeak  = FormatDps(dPeak);  }
+            if (Math.Abs(dTotal - _vDpsTotal) > 0.5f) { _vDpsTotal = dTotal; _sDpsTotal = FormatDps(dTotal); }
         }
 
         // While the inventory (right panel) is open, force the minimised view.
@@ -132,15 +190,39 @@ namespace ExileStats
             _wasInventoryOpen = inventoryOpen;
         }
 
-        // The mini (timer) panel top-left, anchored so the whole stack's bottom stays at PosY.
-        // Minimised: only mini, bottom at PosY  →  mini top = PosY - MiniH
-        // Expanded:  full sits at the bottom, mini rises above it
-        //            full top = PosY - FullH ; mini top = PosY - FullH - MiniH
-        private Vector2 MiniPos => new Vector2(
-            Settings.PosX,
-            _isExpanded ? Settings.PosY - FullH - MiniH : Settings.PosY - MiniH);
+        // Stats+Timer group scale.
+        private float GroupScale => Settings.GroupScale.Value;
 
-        private Vector2 FullPos => new Vector2(Settings.PosX, Settings.PosY - FullH);
+        // Stats+Timer stack. At scale 1 the layout matches the old anchor exactly:
+        // left = PosX, bottom of the stack = PosY (mini rises above full). For scale > 1
+        // the stack grows symmetrically from its center so it doesn't drift.
+        private Vector2 StackTopLeft
+        {
+            get
+            {
+                float g = GroupScale;
+                float baseLeft = Settings.PosX;
+                float baseTop  = _isExpanded ? Settings.PosY - FullH - MiniH : Settings.PosY - MiniH;
+                float baseW = Math.Max(MiniW, FullW);
+                float baseH = _isExpanded ? (MiniH + FullH) : MiniH;
+                float cx = baseLeft + baseW / 2f;
+                float cy = baseTop  + baseH / 2f;
+                return new Vector2(cx - baseW * g / 2f, cy - baseH * g / 2f);
+            }
+        }
+
+        // Mini (timer) panel top-left within the centered stack.
+        private Vector2 MiniPos => StackTopLeft;
+
+        // Full (stats) panel top-left: directly below the mini panel.
+        private Vector2 FullPos
+        {
+            get
+            {
+                var tl = StackTopLeft;
+                return new Vector2(tl.X, tl.Y + MiniH * GroupScale);
+            }
+        }
 
         private void HandleToggleClick()
         {
@@ -149,11 +231,12 @@ namespace ExileStats
             if (!Input.IsKeyDown(Keys.LButton)) return;
             if ((DateTime.Now - _lastClickTime).TotalMilliseconds < ClickDebounceMs) return;
 
+            float g = GroupScale;
             var mini = MiniPos;
             var btnRect = new RectangleF(
-                mini.X + Settings.BtnOffX,
-                mini.Y + Settings.BtnOffY,
-                BtnW, BtnH);
+                mini.X + BtnOX * g,
+                mini.Y + BtnOY * g,
+                BtnW * g, BtnH * g);
 
             var mouse = Input.MousePosition;
             if (mouse.X >= btnRect.Left && mouse.X <= btnRect.Right &&
@@ -168,53 +251,55 @@ namespace ExileStats
         {
             if (!Settings.Enable) return;
 
+            float g = GroupScale;
             var pos = MiniPos;
 
-            // 1. Draw ui-mini background
-            Graphics.DrawImage(ImgMini, new RectangleF(pos.X, pos.Y, MiniW, MiniH));
+            // 1. Draw ui-mini background (scaled)
+            Graphics.DrawImage(ImgMini, new RectangleF(pos.X, pos.Y, MiniW * g, MiniH * g));
 
             // 2. Timer digits (HH MM SS, centred in each block, with letter-spacing)
-            var ts = Settings.TimerScale.Value;
-            using (Graphics.SetTextScale(ts))
+            using (Graphics.SetTextScale(TimerFont * g))
             {
-                var tk = Settings.TimerTracking.Value;
-                DrawCentred(_sHours,   pos, Settings.OffHoursX,   Settings.OffHoursY,   tk, ts);
-                DrawCentred(_sMinutes, pos, Settings.OffMinutesX, Settings.OffMinutesY, tk, ts);
-                DrawCentred(_sSeconds, pos, Settings.OffSecondsX, Settings.OffSecondsY, tk, ts);
+                float tk = TimerTracking * g;
+                DrawCentred(_sHours,   pos, HoursOX * g, HoursOY * g, tk, TimerFont * g);
+                DrawCentred(_sMinutes, pos, MinOX   * g, MinOY   * g, tk, TimerFont * g);
+                DrawCentred(_sSeconds, pos, SecOX   * g, SecOY   * g, tk, TimerFont * g);
             }
 
-            // 3. Toggle button
+            // 3. Toggle button (scaled)
             var btnImg = _isExpanded ? ImgBtnFull : ImgBtnMini;
             Graphics.DrawImage(btnImg, new RectangleF(
-                pos.X + Settings.BtnOffX,
-                pos.Y + Settings.BtnOffY,
-                BtnW, BtnH));
+                pos.X + BtnOX * g,
+                pos.Y + BtnOY * g,
+                BtnW * g, BtnH * g));
 
-            // 4. Stats panel (anchored at the bottom; timer rises above it)
+            RenderDpsGauge();
+
+            // 5. Stats panel (below the mini panel within the centered stack)
             if (!_isExpanded) return;
 
             var fp = FullPos;
-            Graphics.DrawImage(ImgFull, new RectangleF(fp.X, fp.Y, FullW, FullH));
+            Graphics.DrawImage(ImgFull, new RectangleF(fp.X, fp.Y, FullW * g, FullH * g));
 
-            var ss = Settings.StatsScale.Value;
-            using (Graphics.SetTextScale(ss))
+            using (Graphics.SetTextScale(StatsFont * g))
             {
-                var sk = Settings.StatsTracking.Value;
-                DrawCentred(_sKills,  fp, Settings.OffKillsX,  Settings.OffKillsY,  sk, ss);
-                DrawCentred(_sKmin,   fp, Settings.OffKminX,   Settings.OffKminY,   sk, ss);
-                DrawCentred(_sMaps,   fp, Settings.OffMapsX,   Settings.OffMapsY,   sk, ss);
-                DrawCentred(_sMh,     fp, Settings.OffMhX,     Settings.OffMhY,     sk, ss);
-                DrawCentred(_sXph,    fp, Settings.OffXphX,    Settings.OffXphY,    sk, ss);
-                DrawCentred(_sDeaths, fp, Settings.OffDeathsX, Settings.OffDeathsY, sk, ss);
+                float sk = StatsTracking * g;
+                DrawCentred(_sKills,  fp, KillsOX  * g, KillsOY  * g, sk, StatsFont * g);
+                DrawCentred(_sKmin,   fp, KminOX   * g, KminOY   * g, sk, StatsFont * g);
+                DrawCentred(_sMaps,   fp, MapsOX   * g, MapsOY   * g, sk, StatsFont * g);
+                DrawCentred(_sMh,     fp, MhOX     * g, MhOY     * g, sk, StatsFont * g);
+                DrawCentred(_sXph,    fp, XphOX    * g, XphOY    * g, sk, StatsFont * g);
+                DrawCentred(_sDeaths, fp, DeathsOX * g, DeathsOY * g, sk, StatsFont * g);
             }
         }
 
         // Draws text left-aligned at (origin + offset), with optional per-character letter spacing.
-        private void DrawCentred(string text, Vector2 origin, RangeNode<int> offX, RangeNode<int> offY, float tracking, float scale)
+        // offX/offY/tracking/scale are already multiplied by the group scale by the caller.
+        private void DrawCentred(string text, Vector2 origin, float offX, float offY, float tracking, float scale)
         {
-            var color = Settings.ValueColor.Value;
-            var startX = origin.X + offX.Value;
-            var startY = origin.Y + offY.Value;
+            var color = ValueColor;
+            var startX = origin.X + offX;
+            var startY = origin.Y + offY;
 
             if (tracking <= 0f)
             {
@@ -238,6 +323,77 @@ namespace ExileStats
             w = Graphics.MeasureText(ch.ToString()).X;
             _charWidthCache[key] = w;
             return w;
+        }
+
+        private void RenderDpsGauge()
+        {
+            if (!Settings.ShowDpsGauge.Value) return;
+            if (!Logic.IsInMap) return;
+
+            var s = Settings;
+            float sc = s.DpsScale.Value;
+            // At scale 1 origin == (DpsPanelX,DpsPanelY) top-left (matches calibration);
+            // for scale > 1 the gauge grows symmetrically from its center.
+            float dcx = s.DpsPanelX.Value + DpsW / 2f;
+            float dcy = s.DpsPanelY.Value + DpsH / 2f;
+            var origin = new Vector2(dcx - DpsW * sc / 2f, dcy - DpsH * sc / 2f);
+
+            // 1. PNG background first
+            Graphics.DrawImage(ImgDps, new RectangleF(origin.X, origin.Y, DpsW * sc, DpsH * sc));
+
+            // 2. Bar fill on top of PNG — Now relative to user-configured DpsMax.
+            //    Full bar (fill=1) == BarBaseW (fixed width, matches the UI frame).
+            float dpsMax = s.DpsMax.Value < 1 ? 1 : s.DpsMax.Value;
+            float fill   = Math.Min(_vDpsNow / dpsMax, 1f);
+            if (fill < 0f) fill = 0f;
+
+            float barX = origin.X + BarOX * sc;
+            float barY = origin.Y + BarOY * sc;
+            float barH = BarBaseH * sc;
+            float barW = BarBaseW * sc * fill;
+            if (barW > 0.5f)
+            {
+                // Reveal: show the left `fill` fraction of the gradient 1:1 (no stretch)
+                var uv = new RectangleF(0f, 0f, fill, 1f);
+                Graphics.DrawImage(ImgBar, new RectangleF(barX, barY, barW, barH), uv, Color.White);
+            }
+
+            // 3. Text on top of everything
+            // NOW — centered horizontally on the fixed NowOX point.
+            using (Graphics.SetTextScale(NowFont * sc))
+            {
+                float centerX = origin.X + NowOX * sc;
+                float halfW = Graphics.MeasureText(_sDpsNow).X / 2f;
+                Graphics.DrawText(_sDpsNow, new Vector2(centerX - halfW, origin.Y + NowOY * sc), ValueColor);
+            }
+
+            using (Graphics.SetTextScale(StatFont * sc))
+            {
+                Graphics.DrawText(_sDpsPeak,  new Vector2(origin.X + PeakOX  * sc, origin.Y + PeakOY  * sc), ValueColor);
+                Graphics.DrawText(_sDpsTotal, new Vector2(origin.X + TotalOX * sc, origin.Y + TotalOY * sc), ValueColor);
+            }
+        }
+
+        private void TryResolveAimCore()
+        {
+            if (_aimCoreResolved) return;
+            _aimCoreResolved = true;
+            var t = AppDomain.CurrentDomain.GetAssemblies()
+                .SelectMany(a => { try { return a.GetTypes(); } catch { return Array.Empty<Type>(); } })
+                .FirstOrDefault(t => t.FullName == "AimCore.AimCore");
+            if (t == null) return;
+            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static;
+            _piDpsNow   = t.GetProperty("DpsNow",   flags);
+            _piDpsPeak  = t.GetProperty("DpsPeak",  flags);
+            _piDpsTotal = t.GetProperty("DpsTotal", flags);
+        }
+
+        private static string FormatDps(float v)
+        {
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            if (v >= 1_000_000f) return (v / 1_000_000f).ToString("0.00", ci) + "M";
+            if (v >= 1_000f)     return (v / 1_000f).ToString("0.0", ci) + "k";
+            return ((int)v).ToString(ci);
         }
     }
 }
