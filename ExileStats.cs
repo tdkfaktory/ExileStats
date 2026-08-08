@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Linq;
 using System.Numerics;
 using System.Windows.Forms;
 using ExileCore2;
@@ -59,6 +58,19 @@ namespace ExileStats
         // are constant for a given scale, so we measure each once instead of every frame.
         private readonly Dictionary<(char, float), float> _charWidthCache = new();
 
+        // Cache of single-character strings so the per-glyph timer render path
+        // (DrawCentred with tracking>0) reuses one string per char instead of
+        // allocating a fresh ch.ToString() every frame.
+        private readonly Dictionary<char, string> _charStringCache = new();
+
+        private string CharString(char ch)
+        {
+            if (_charStringCache.TryGetValue(ch, out var s)) return s;
+            s = ch.ToString();
+            _charStringCache[ch] = s;
+            return s;
+        }
+
         // Cached display strings — rebuilt only when the underlying value changes,
         // not every frame, to avoid per-frame string allocations (GC pressure).
         private string _sKills = "0", _sKmin = "0", _sMaps = "0", _sMh = "0", _sXph = "0", _sDeaths = "0";
@@ -71,6 +83,7 @@ namespace ExileStats
 
         // Standalone DPS tracker — entity HP-delta scanner, no external plugin needed
         private DpsTracker _dpsTracker;
+        private bool _settingsHookAttached;
         private string _sDpsNow = "0", _sDpsPeak = "—", _sDpsTotal = "—";
         private float _vDpsNow = -1f, _vDpsPeak = -1f, _vDpsTotal = -1f;
 
@@ -86,17 +99,20 @@ namespace ExileStats
             Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\ui-dps.png").Replace('\\', '/'), false);
             Graphics.InitImage(Path.Combine(DirectoryFullName, "images\\ui-dps-bar.png").Replace('\\', '/'), false);
 
-            Settings.ResetPositions.OnPressed += () =>
-            {
-                Settings.PosX.Value = 1445;
-                Settings.PosY.Value = 933;
-                Settings.DpsPanelX.Value = 818;
-                Settings.DpsPanelY.Value = 868;
-                Settings.GroupScale.Value = 1.0f;
-                Settings.DpsScale.Value = 1.0f;
-            };
+            Settings.ResetPositions.OnPressed += ResetPositions;
+            _settingsHookAttached = true;
 
             return true;
+        }
+
+        private void ResetPositions()
+        {
+            Settings.PosX.Value = 1445;
+            Settings.PosY.Value = 933;
+            Settings.DpsPanelX.Value = 818;
+            Settings.DpsPanelY.Value = 868;
+            Settings.GroupScale.Value = 1.0f;
+            Settings.DpsScale.Value = 1.0f;
         }
 
         public override void AreaChange(AreaInstance area)
@@ -112,6 +128,8 @@ namespace ExileStats
 
         public override void Tick()
         {
+            if (!Settings.Enable.Value) return;
+
             // Freeze all stats while the ESC / "Game Paused" menu is open.
             bool gameIsPaused = GameController?.Game?.IsEscapeState ?? false;
             if (!gameIsPaused)
@@ -251,9 +269,10 @@ namespace ExileStats
 
         public override void Render()
         {
-            if (!Settings.Enable) return;
+            if (!Settings.Enable.Value) return;
 
             float g = GroupScale;
+            if (!float.IsFinite(g) || g <= 0) return;
             var pos = MiniPos;
 
             // 1. Draw ui-mini background (scaled)
@@ -312,7 +331,7 @@ namespace ExileStats
             float cursorX = startX;
             foreach (var ch in text)
             {
-                Graphics.DrawText(ch.ToString(), new Vector2(cursorX, startY), color);
+                Graphics.DrawText(CharString(ch), new Vector2(cursorX, startY), color);
                 cursorX += GetCharWidth(ch, scale) + tracking;
             }
         }
@@ -322,7 +341,7 @@ namespace ExileStats
         {
             var key = (ch, scale);
             if (_charWidthCache.TryGetValue(key, out var w)) return w;
-            w = Graphics.MeasureText(ch.ToString()).X;
+            w = Graphics.MeasureText(CharString(ch)).X;
             _charWidthCache[key] = w;
             return w;
         }
@@ -334,6 +353,7 @@ namespace ExileStats
 
             var s = Settings;
             float sc = s.DpsScale.Value;
+            if (!float.IsFinite(sc) || sc <= 0) return;
             // At scale 1 origin == (DpsPanelX,DpsPanelY) top-left (matches calibration);
             // for scale > 1 the gauge grows symmetrically from its center.
             float dcx = s.DpsPanelX.Value + DpsW / 2f;
@@ -378,10 +398,33 @@ namespace ExileStats
 
         private static string FormatDps(float v)
         {
+            if (!float.IsFinite(v) || v <= 0) return "0";
+
             var ci = System.Globalization.CultureInfo.InvariantCulture;
             if (v >= 1_000_000f) return (v / 1_000_000f).ToString("0.00", ci) + "M";
             if (v >= 1_000f)     return (v / 1_000f).ToString("0.0", ci) + "k";
             return ((int)v).ToString(ci);
+        }
+
+        public override void OnPluginDestroyForHotReload()
+        {
+            DetachSettingsHook();
+            base.OnPluginDestroyForHotReload();
+        }
+
+        public override void Dispose()
+        {
+            DetachSettingsHook();
+            base.Dispose();
+        }
+
+        private void DetachSettingsHook()
+        {
+            if (!_settingsHookAttached)
+                return;
+
+            Settings.ResetPositions.OnPressed -= ResetPositions;
+            _settingsHookAttached = false;
         }
     }
 }

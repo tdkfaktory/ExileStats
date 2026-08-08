@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using ExileCore2;
 using ExileCore2.PoEMemory.Components;
 
@@ -59,9 +58,14 @@ namespace ExileStats
             _gc = gc;
         }
 
-        // Endgame Waystone maps (PoE2 0.5): always Act 10, area level 65 (T1) to ~82 (T16).
+        // Endgame Waystone maps (PoE2 0.5.4e): always Act 10, area level 65 (T1) rising
+        // +1 per tier to 79 (T15), with T16 (Vaal-corrupted T15) at level 80.
         // Campaign trials/areas sit in Acts 1-9 at lower levels (e.g. Well of Souls = Act 2, lvl 22).
         // Confirmed via in-game debug: real maps report Act=10, Level=78-80.
+        // NOTE (0.5 "Return of the Ancients" Atlas rework): several non-Waystone endgame
+        // nodes now also satisfy Act==10 && level>=65 (Precursor Towers, the Fortress,
+        // pinnacle/citadel boss arenas, unique maps, Grand Expedition). They are counted
+        // here too, so MapsCompleted means "endgame areas entered", not "Waystone maps run".
         private const int EndgameAct = 10;
         private const int EndgameMinLevel = 65;
 

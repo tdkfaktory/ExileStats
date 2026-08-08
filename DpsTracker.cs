@@ -79,7 +79,8 @@ namespace ExileStats
                     // Null + IsValid BEFORE any other property read — reading IsAlive or
                     // components on a freed entity is a native access violation (uncatchable).
                     if (entity == null || !entity.IsValid) continue;
-                    if (entity.DistancePlayer > ScanRange) continue;
+                    var distance = entity.DistancePlayer;
+                    if (!float.IsFinite(distance) || distance > ScanRange) continue;
                     if (!entity.IsHostile) continue;
 
                     uint id = entity.Id;
@@ -148,7 +149,7 @@ namespace ExileStats
                 if (entity.TryGetComponent<Life>(out var life) && life != null)
                     return life.CurHP;
             }
-            catch { }
+            catch { /* entity freed mid-read; treat as no HP this tick */ }
             return 0;
         }
     }
