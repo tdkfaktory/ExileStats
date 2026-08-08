@@ -39,17 +39,24 @@ namespace ExileStats
         public double XpPerHour { get; private set; }
 
         // Public stats — session
-        public int MapsCompleted { get; private set; }
+        // Incremented when a new endgame area is entered. The host does not
+        // expose a completion event, so this must not claim a map was finished.
+        public int MapsEntered { get; private set; }
+
+        // Compatibility alias for consumers of the pre-audit property. It keeps
+        // the original entry-count semantics and is intentionally not a completion signal.
+        [Obsolete("Use MapsEntered; this value counts endgame area entries.")]
+        public int MapsCompleted => MapsEntered;
         // Maps/hour: based on time since the first real map was entered, and only
         // meaningful after at least one full map (>= 1) and a few minutes elapsed.
         public double MapsPerHour
         {
             get
             {
-                if (!_mapClockStarted || MapsCompleted < 1) return 0;
+                if (!_mapClockStarted || MapsEntered < 1) return 0;
                 var hours = (DateTime.Now - _mapClockStart).TotalHours;
                 if (hours < (5.0 / 60.0)) return 0; // need >= 5 min before showing a rate
-                return MapsCompleted / hours;
+                return MapsEntered / hours;
             }
         }
         public int SessionDeaths { get; private set; }
@@ -66,7 +73,7 @@ namespace ExileStats
         // NOTE (0.5 "Return of the Ancients" Atlas rework): several non-Waystone endgame
         // nodes now also satisfy Act==10 && level>=65 (Precursor Towers, the Fortress,
         // pinnacle/citadel boss arenas, unique maps, Grand Expedition). They are counted
-        // here too, so MapsCompleted means "endgame areas entered", not "Waystone maps run".
+        // here too, so MapsEntered means "endgame areas entered", not "Waystone maps run".
         private const int EndgameAct = 10;
         private const int EndgameMinLevel = 65;
 
@@ -96,7 +103,7 @@ namespace ExileStats
                 // states; do not let the default zero suppress the first map.
                 if (isEndgame && (!_hasCountedMapHash || area.Hash != _lastCountedMapHash))
                 {
-                    MapsCompleted++;
+                    MapsEntered++;
                     _lastCountedMapHash = area.Hash;
                     _hasCountedMapHash = true;
 

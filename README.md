@@ -1,7 +1,7 @@
 # ExileStats — PoE2
 
 Mapping and combat statistics HUD for ExileCore2: map timer, kills, XP/hour,
-deaths, maps/hour, and a decaying DPS gauge.
+deaths, endgame-area entries/hour, and a decaying DPS gauge.
 
 ## Logic
 
@@ -20,6 +20,8 @@ The plugin performs no network I/O or game automation.
 
 Endgame-entry counting also handles a temporarily unavailable zero area hash;
 the first qualifying endgame area is not lost because of the default hash value.
+The HUD's map counter is an entry counter (`MapsEntered`), not a completion claim,
+because the current host does not expose a reliable map-completed event.
 
 ## Status
 

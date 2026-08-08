@@ -152,7 +152,7 @@ namespace ExileStats
             int kmin = mapSecs >= 10 ? (int)Math.Round(kills / (mapSecs / 60.0)) : 0;
             if (kmin != _vKmin) { _vKmin = kmin; _sKmin = kmin.ToString(); }
 
-            int maps = Logic.MapsCompleted;
+            int maps = Logic.MapsEntered;
             if (maps != _vMaps) { _vMaps = maps; _sMaps = maps.ToString(); }
 
             int mh = (int)Math.Round(Logic.MapsPerHour);
