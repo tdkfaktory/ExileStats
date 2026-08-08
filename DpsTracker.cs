@@ -69,8 +69,10 @@ namespace ExileStats
 
             float damageThisTick = 0f;
 
-            var monsters = _gc?.EntityListWrapper?.ValidEntitiesByType[EntityType.Monster];
-            if (monsters == null) return;
+            if (_gc?.EntityListWrapper?.ValidEntitiesByType is not { } byType ||
+                !byType.TryGetValue(EntityType.Monster, out var monsters) ||
+                monsters == null)
+                return;
 
             foreach (var entity in monsters)
             {

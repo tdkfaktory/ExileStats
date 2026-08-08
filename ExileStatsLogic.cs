@@ -30,6 +30,7 @@ namespace ExileStats
 
         // Map-counting state
         private uint _lastCountedMapHash;
+        private bool _hasCountedMapHash;
         private DateTime _mapClockStart;
         private bool _mapClockStarted;
 
@@ -91,10 +92,13 @@ namespace ExileStats
             {
                 // Only count NEW endgame maps (T1-T16), by unique instance hash.
                 // Re-entering the same map (same hash) does not count again.
-                if (isEndgame && area.Hash != _lastCountedMapHash)
+                // A zero hash is a valid "unavailable" value in some loading
+                // states; do not let the default zero suppress the first map.
+                if (isEndgame && (!_hasCountedMapHash || area.Hash != _lastCountedMapHash))
                 {
                     MapsCompleted++;
                     _lastCountedMapHash = area.Hash;
+                    _hasCountedMapHash = true;
 
                     if (!_mapClockStarted)
                     {

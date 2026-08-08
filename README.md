@@ -10,12 +10,16 @@ deaths, maps/hour, and a decaying DPS gauge.
 2. `ExileStatsLogic` samples XP and Life on a throttle to calculate XP/hour and
    session deaths.
 3. `DpsTracker` scans nearby hostile monsters, accumulates Life deltas, confirms
-   kills, removes stale entities, and applies time decay.
+   kills, removes stale entities, and applies time decay. If the current host
+   does not expose a monster bucket, the scan safely skips that interval.
 4. `Tick` refreshes cached display strings and handles the plugin's own
    debounced expand/collapse button.
 5. `Render` draws the bundled PNG panels, labels, and DPS fill gauge.
 
 The plugin performs no network I/O or game automation.
+
+Endgame-entry counting also handles a temporarily unavailable zero area hash;
+the first qualifying endgame area is not lost because of the default hash value.
 
 ## Status
 
